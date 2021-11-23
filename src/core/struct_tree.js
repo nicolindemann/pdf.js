@@ -299,6 +299,10 @@ class StructTreePage {
       if (isString(lang)) {
         obj.lang = stringToPDFString(lang);
       }
+      const refId = node.dict.get('ID');
+      if (isString(refId)) {
+        obj.refId = stringToPDFString(refId)
+      }
 
       for (const kid of node.kids) {
         const kidElement =
