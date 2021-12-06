@@ -54,6 +54,11 @@ import { XfaLayerBuilder } from "./xfa_layer_builder.js";
 
 const DEFAULT_CACHE_SIZE = 10;
 
+const PagesCountLimit = {
+  FORCE_SCROLL_MODE_PAGE: 15000,
+  FORCE_LAZY_PAGE_INIT: 7500,
+};
+
 /**
  * @typedef {Object} PDFViewerOptions
  * @property {HTMLDivElement} container - The container for the viewer element.
@@ -159,23 +164,13 @@ class PDFPageViewBuffer {
   }
 }
 
-function isSameScale(oldScale, newScale) {
-  if (newScale === oldScale) {
-    return true;
-  }
-  if (Math.abs(newScale - oldScale) < 1e-15) {
-    // Prevent unnecessary re-rendering of all pages when the scale
-    // changes only because of limited numerical precision.
-    return true;
-  }
-  return false;
-}
-
 /**
  * Simple viewer control to display PDF content/pages.
  */
 class BaseViewer {
   #buffer = null;
+
+  #previousContainerHeight = 0;
 
   #scrollModePageState = null;
 
@@ -525,12 +520,24 @@ class BaseViewer {
     // Rendering (potentially) depends on this, hence fetching it immediately.
     const optionalContentConfigPromise = pdfDocument.getOptionalContentConfig();
 
-    this._pagesCapability.promise.then(() => {
-      this.eventBus.dispatch("pagesloaded", {
-        source: this,
-        pagesCount,
-      });
-    });
+    // Given that browsers don't handle huge amounts of DOM-elements very well,
+    // enforce usage of PAGE-scrolling when loading *very* long/large documents.
+    if (pagesCount > PagesCountLimit.FORCE_SCROLL_MODE_PAGE) {
+      console.warn(
+        "Forcing PAGE-scrolling for performance reasons, given the length of the document."
+      );
+      const mode = (this._scrollMode = ScrollMode.PAGE);
+      this.eventBus.dispatch("scrollmodechanged", { source: this, mode });
+    }
+
+    this._pagesCapability.promise.then(
+      () => {
+        this.eventBus.dispatch("pagesloaded", { source: this, pagesCount });
+      },
+      () => {
+        /* Prevent "Uncaught (in promise)"-messages in the console. */
+      }
+    );
 
     this._onBeforeDraw = evt => {
       const pageView = this._pages[evt.pageNumber - 1];
@@ -628,7 +635,10 @@ class BaseViewer {
 
           // In addition to 'disableAutoFetch' being set, also attempt to reduce
           // resource usage when loading *very* long/large documents.
-          if (pdfDocument.loadingParams.disableAutoFetch || pagesCount > 7500) {
+          if (
+            pdfDocument.loadingParams.disableAutoFetch ||
+            pagesCount > PagesCountLimit.FORCE_LAZY_PAGE_INIT
+          ) {
             // XXX: Printing is semi-broken with auto fetch disabled.
             this._pagesCapability.resolve();
             return;
@@ -672,6 +682,8 @@ class BaseViewer {
       })
       .catch(reason => {
         console.error("Unable to initialize viewer", reason);
+
+        this._pagesCapability.reject(reason);
       });
   }
 
@@ -751,7 +763,20 @@ class BaseViewer {
     if (this._spreadMode === SpreadMode.NONE) {
       // Finally, append the new page to the viewer.
       const pageView = this._pages[pageNumber - 1];
-      viewer.appendChild(pageView.div);
+
+      if (this.isInPresentationMode) {
+        const spread = document.createElement("div");
+        spread.className = "spread";
+        const dummyPage = document.createElement("div");
+        dummyPage.className = "dummyPage";
+        dummyPage.style.height = `${this.container.clientHeight}px`;
+
+        spread.appendChild(dummyPage);
+        spread.appendChild(pageView.div);
+        viewer.appendChild(spread);
+      } else {
+        viewer.appendChild(pageView.div);
+      }
 
       state.pages.push(pageView);
     } else {
@@ -828,10 +853,29 @@ class BaseViewer {
     scrollIntoView(pageDiv, pageSpot);
   }
 
+  /**
+   * Prevent unnecessary re-rendering of all pages when the scale changes
+   * only because of limited numerical precision.
+   */
+  #isSameScale(newScale) {
+    if (
+      this.isInPresentationMode &&
+      this.container.clientHeight !== this.#previousContainerHeight
+    ) {
+      // Ensure that the current page remains centered vertically if/when
+      // the window is resized while PresentationMode is active.
+      return false;
+    }
+    return (
+      newScale === this._currentScale ||
+      Math.abs(newScale - this._currentScale) < 1e-15
+    );
+  }
+
   _setScaleUpdatePages(newScale, newValue, noScroll = false, preset = false) {
     this._currentScaleValue = newValue.toString();
 
-    if (isSameScale(this._currentScale, newScale)) {
+    if (this.#isSameScale(newScale)) {
       if (preset) {
         this.eventBus.dispatch("scalechanging", {
           source: this,
@@ -886,6 +930,8 @@ class BaseViewer {
     if (this.defaultRenderingQueue) {
       this.update();
     }
+
+    this.#previousContainerHeight = this.container.clientHeight;
   }
 
   /**
@@ -911,11 +957,15 @@ class BaseViewer {
       if (!currentPage) {
         return;
       }
-      const noPadding = this.isInPresentationMode || this.removePageBorders;
-      let hPadding = noPadding ? 0 : SCROLLBAR_PADDING;
-      let vPadding = noPadding ? 0 : VERTICAL_PADDING;
+      let hPadding = SCROLLBAR_PADDING,
+        vPadding = VERTICAL_PADDING;
 
-      if (!noPadding && this._scrollMode === ScrollMode.HORIZONTAL) {
+      if (this.isInPresentationMode) {
+        hPadding = vPadding = 4;
+      } else if (this.removePageBorders) {
+        hPadding = vPadding = 0;
+      }
+      if (this._scrollMode === ScrollMode.HORIZONTAL) {
         [hPadding, vPadding] = [vPadding, hPadding]; // Swap the padding values.
       }
       const pageWidthScale =
@@ -1657,6 +1707,9 @@ class BaseViewer {
     if (!isValidScrollMode(mode)) {
       throw new Error(`Invalid scroll mode: ${mode}`);
     }
+    if (this.pagesCount > PagesCountLimit.FORCE_SCROLL_MODE_PAGE) {
+      return; // Disabled for performance reasons.
+    }
     this._previousScrollMode = this._scrollMode;
 
     this._scrollMode = mode;
@@ -1929,4 +1982,4 @@ class BaseViewer {
   }
 }
 
-export { BaseViewer, PDFPageViewBuffer };
+export { BaseViewer, PagesCountLimit, PDFPageViewBuffer };

@@ -487,3 +487,15 @@
 !secHandler.pdf
 !rc_annotation.pdf
 !issue14267.pdf
+!PDFBOX-4352-0.pdf
+!REDHAT-1531897-0.pdf
+!xfa_issue14315.pdf
+!poppler-67295-0.pdf
+!poppler-85140-0.pdf
+!poppler-395-0-fuzzed.pdf
+!GHOSTSCRIPT-698804-1-fuzzed.pdf
+!poppler-91414-0-53.pdf
+!poppler-91414-0-54.pdf
+!poppler-742-0-fuzzed.pdf
+!poppler-937-0-fuzzed.pdf
+!PDFBOX-3148-2-fuzzed.pdf
