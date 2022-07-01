@@ -13,8 +13,20 @@
  * limitations under the License.
  */
 
-import { warn } from "../shared/util.js";
+/** @typedef {import("./display_utils").PageViewport} PageViewport */
+/** @typedef {import("../../web/interfaces").IPDFLinkService} IPDFLinkService */
+
 import { XfaText } from "./xfa_text.js";
+
+/**
+ * @typedef {Object} XfaLayerParameters
+ * @property {PageViewport} viewport
+ * @property {HTMLDivElement} div
+ * @property {Object} xfaHtml
+ * @property {AnnotationStorage} [annotationStorage]
+ * @property {IPDFLinkService} linkService
+ * @property {string} [intent] - (default value is 'display').
+ */
 
 class XfaLayer {
   static setupStorage(html, id, element, storage, intent) {
@@ -121,15 +133,7 @@ class XfaLayer {
     }
 
     if (isHTMLAnchorElement) {
-      if (
-        (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) &&
-        !linkService.addLinkAttributes
-      ) {
-        warn(
-          "XfaLayer.setAttribute - missing `addLinkAttributes`-method on the `linkService`-instance."
-        );
-      }
-      linkService.addLinkAttributes?.(
+      linkService.addLinkAttributes(
         html,
         attributes.href,
         attributes.newWindow
@@ -143,10 +147,15 @@ class XfaLayer {
     }
   }
 
+  /**
+   * Render the XFA layer.
+   *
+   * @param {XfaLayerParameters} parameters
+   */
   static render(parameters) {
     const storage = parameters.annotationStorage;
     const linkService = parameters.linkService;
-    const root = parameters.xfa;
+    const root = parameters.xfaHtml;
     const intent = parameters.intent || "display";
     const rootHtml = document.createElement(root.name);
     if (root.attributes) {
@@ -160,7 +169,7 @@ class XfaLayer {
     const stack = [[root, -1, rootHtml]];
 
     const rootDiv = parameters.div;
-    rootDiv.appendChild(rootHtml);
+    rootDiv.append(rootHtml);
 
     if (parameters.viewport) {
       const transform = `matrix(${parameters.viewport.transform.join(",")})`;
@@ -176,13 +185,13 @@ class XfaLayer {
     const textDivs = [];
 
     while (stack.length > 0) {
-      const [parent, i, html] = stack[stack.length - 1];
+      const [parent, i, html] = stack.at(-1);
       if (i + 1 === parent.children.length) {
         stack.pop();
         continue;
       }
 
-      const child = parent.children[++stack[stack.length - 1][1]];
+      const child = parent.children[++stack.at(-1)[1]];
       if (child === null) {
         continue;
       }
@@ -191,7 +200,7 @@ class XfaLayer {
       if (name === "#text") {
         const node = document.createTextNode(child.value);
         textDivs.push(node);
-        html.appendChild(node);
+        html.append(node);
         continue;
       }
 
@@ -202,7 +211,7 @@ class XfaLayer {
         childHtml = document.createElement(name);
       }
 
-      html.appendChild(childHtml);
+      html.append(childHtml);
       if (child.attributes) {
         this.setAttributes({
           html: childHtml,
@@ -220,7 +229,7 @@ class XfaLayer {
         if (XfaText.shouldBuildText(name)) {
           textDivs.push(node);
         }
-        childHtml.appendChild(node);
+        childHtml.append(node);
       }
     }
 
@@ -252,11 +261,9 @@ class XfaLayer {
   }
 
   /**
-   * Update the xfa layer.
+   * Update the XFA layer.
    *
-   * @public
    * @param {XfaLayerParameters} parameters
-   * @memberof XfaLayer
    */
   static update(parameters) {
     const transform = `matrix(${parameters.viewport.transform.join(",")})`;

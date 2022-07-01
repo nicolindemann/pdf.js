@@ -13,15 +13,17 @@
  * limitations under the License.
  */
 
-/** @typedef {import("./interfaces").IPDFXfaLayerFactory} IPDFXfaLayerFactory */
+/** @typedef {import("../src/display/api").PDFPageProxy} PDFPageProxy */
+// eslint-disable-next-line max-len
+/** @typedef {import("../src/display/display_utils").PageViewport} PageViewport */
+/** @typedef {import("./interfaces").IPDFLinkService} IPDFLinkService */
 
-import { SimpleLinkService } from "./pdf_link_service.js";
 import { XfaLayer } from "pdfjs-lib";
 
 /**
  * @typedef {Object} XfaLayerBuilderOptions
  * @property {HTMLDivElement} pageDiv
- * @property {PDFPage} pdfPage
+ * @property {PDFPageProxy} pdfPage
  * @property {AnnotationStorage} [annotationStorage]
  * @property {IPDFLinkService} linkService
  * @property {Object} [xfaHtml]
@@ -31,7 +33,13 @@ class XfaLayerBuilder {
   /**
    * @param {XfaLayerBuilderOptions} options
    */
-  constructor({ pageDiv, pdfPage, annotationStorage, linkService, xfaHtml }) {
+  constructor({
+    pageDiv,
+    pdfPage,
+    annotationStorage = null,
+    linkService,
+    xfaHtml = null,
+  }) {
     this.pageDiv = pageDiv;
     this.pdfPage = pdfPage;
     this.annotationStorage = annotationStorage;
@@ -54,8 +62,7 @@ class XfaLayerBuilder {
       const parameters = {
         viewport: viewport.clone({ dontFlip: true }),
         div: this.div,
-        xfa: this.xfaHtml,
-        page: null,
+        xfaHtml: this.xfaHtml,
         annotationStorage: this.annotationStorage,
         linkService: this.linkService,
         intent,
@@ -63,7 +70,7 @@ class XfaLayerBuilder {
 
       // Create an xfa layer div and render the form
       const div = document.createElement("div");
-      this.pageDiv.appendChild(div);
+      this.pageDiv.append(div);
       parameters.div = div;
 
       const result = XfaLayer.render(parameters);
@@ -73,16 +80,15 @@ class XfaLayerBuilder {
     // intent === "display"
     return this.pdfPage
       .getXfa()
-      .then(xfa => {
-        if (this._cancelled || !xfa) {
+      .then(xfaHtml => {
+        if (this._cancelled || !xfaHtml) {
           return { textDivs: [] };
         }
 
         const parameters = {
           viewport: viewport.clone({ dontFlip: true }),
           div: this.div,
-          xfa,
-          page: this.pdfPage,
+          xfaHtml,
           annotationStorage: this.annotationStorage,
           linkService: this.linkService,
           intent,
@@ -93,7 +99,7 @@ class XfaLayerBuilder {
         }
         // Create an xfa layer div and render the form
         this.div = document.createElement("div");
-        this.pageDiv.appendChild(this.div);
+        this.pageDiv.append(this.div);
         parameters.div = this.div;
         return XfaLayer.render(parameters);
       })
@@ -114,30 +120,4 @@ class XfaLayerBuilder {
   }
 }
 
-/**
- * @implements IPDFXfaLayerFactory
- */
-class DefaultXfaLayerFactory {
-  /**
-   * @param {HTMLDivElement} pageDiv
-   * @param {PDFPage} pdfPage
-   * @param {AnnotationStorage} [annotationStorage]
-   * @param {Object} [xfaHtml]
-   */
-  createXfaLayerBuilder(
-    pageDiv,
-    pdfPage,
-    annotationStorage = null,
-    xfaHtml = null
-  ) {
-    return new XfaLayerBuilder({
-      pageDiv,
-      pdfPage,
-      annotationStorage,
-      linkService: new SimpleLinkService(),
-      xfaHtml,
-    });
-  }
-}
-
-export { DefaultXfaLayerFactory, XfaLayerBuilder };
+export { XfaLayerBuilder };

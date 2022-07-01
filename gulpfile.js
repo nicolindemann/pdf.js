@@ -17,7 +17,8 @@
 "use strict";
 
 const autoprefixer = require("autoprefixer");
-const calc = require("postcss-calc");
+const postcssDirPseudoClass = require("postcss-dir-pseudo-class");
+const postcssLogical = require("postcss-logical");
 const fs = require("fs");
 const gulp = require("gulp");
 const postcss = require("gulp-postcss");
@@ -63,7 +64,10 @@ const DIST_DIR = BUILD_DIR + "dist/";
 const TYPES_DIR = BUILD_DIR + "types/";
 const TMP_DIR = BUILD_DIR + "tmp/";
 const TYPESTEST_DIR = BUILD_DIR + "typestest/";
-const COMMON_WEB_FILES = ["web/images/*.{png,svg,gif,cur}", "web/debugger.js"];
+const COMMON_WEB_FILES = [
+  "web/images/*.{png,svg,gif}",
+  "web/debugger.{css,js}",
+];
 const MOZCENTRAL_DIFF_FILE = "mozcentral.diff";
 
 const REPO = "git@github.com:mozilla/pdf.js.git";
@@ -78,10 +82,10 @@ const config = JSON.parse(fs.readFileSync(CONFIG_FILE).toString());
 const AUTOPREFIXER_CONFIG = {
   overrideBrowserslist: [
     "last 2 versions",
-    "Chrome >= 68",
+    "Chrome >= 76",
     "Firefox ESR",
-    "Safari >= 11.1",
-    "> 0.5%",
+    "Safari >= 13",
+    "> 1%",
     "not IE > 0",
     "not dead",
   ],
@@ -186,6 +190,8 @@ function createWebpackConfig(
     DEFAULT_PREFERENCES: defaultPreferencesDir
       ? getDefaultPreferences(defaultPreferencesDir)
       : {},
+    DIALOG_POLYFILL_CSS:
+      defines.GENERIC && !defines.SKIP_BABEL ? getDialogPolyfillCSS() : "",
   });
   const licenseHeaderLibre = fs
     .readFileSync("./src/license_header_libre.js")
@@ -198,14 +204,10 @@ function createWebpackConfig(
     !disableSourceMaps;
   const skipBabel = bundleDefines.SKIP_BABEL;
 
-  // `core-js` (see https://github.com/zloirock/core-js/issues/514),
-  // `web-streams-polyfill` (already using a transpiled file), and
+  // `core-js` (see https://github.com/zloirock/core-js/issues/514), and
   // `src/core/{glyphlist,unicode}.js` (Babel is too slow for those when
   // source-maps are enabled) should be excluded from processing.
-  const babelExcludes = [
-    "node_modules[\\\\\\/]core-js",
-    "node_modules[\\\\\\/]web-streams-polyfill",
-  ];
+  const babelExcludes = ["node_modules[\\\\\\/]core-js"];
   if (enableSourceMaps) {
     babelExcludes.push("src[\\\\\\/]core[\\\\\\/](glyphlist|unicode)");
   }
@@ -230,7 +232,7 @@ function createWebpackConfig(
   }
 
   // Required to expose e.g., the `window` object.
-  output.globalObject = "this";
+  output.globalObject = "globalThis";
 
   return {
     mode: "none",
@@ -326,6 +328,10 @@ function replaceWebpackRequire() {
   return replace("__webpack_require__", "__w_pdfjs_require__");
 }
 
+function replaceNonWebpackImport() {
+  return replace("__non_webpack_import__", "import");
+}
+
 function replaceJSRootName(amdName, jsName) {
   // Saving old-style JS module name.
   return replace(
@@ -348,6 +354,7 @@ function createMainBundle(defines) {
     .src("./src/pdf.js")
     .pipe(webpack2Stream(mainFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(replaceJSRootName(mainAMDName, "pdfjsLib"));
 }
 
@@ -369,6 +376,7 @@ function createScriptingBundle(defines, extraOptions = undefined) {
     .src("./src/pdf.scripting.js")
     .pipe(webpack2Stream(scriptingFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(
       replace(
         'root["' + scriptingAMDName + '"] = factory()',
@@ -427,6 +435,7 @@ function createSandboxBundle(defines, extraOptions = undefined) {
     .src("./src/pdf.sandbox.js")
     .pipe(webpack2Stream(sandboxFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(replaceJSRootName(sandboxAMDName, "pdfjsSandbox"));
 }
 
@@ -444,6 +453,7 @@ function createWorkerBundle(defines) {
     .src("./src/pdf.worker.js")
     .pipe(webpack2Stream(workerFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(replaceJSRootName(workerAMDName, "pdfjsWorker"));
 }
 
@@ -459,7 +469,10 @@ function createWebBundle(defines, options) {
       defaultPreferencesDir: options.defaultPreferencesDir,
     }
   );
-  return gulp.src("./web/viewer.js").pipe(webpack2Stream(viewerFileConfig));
+  return gulp
+    .src("./web/viewer.js")
+    .pipe(webpack2Stream(viewerFileConfig))
+    .pipe(replaceNonWebpackImport());
 }
 
 function createComponentsBundle(defines) {
@@ -476,6 +489,7 @@ function createComponentsBundle(defines) {
     .src("./web/pdf_viewer.component.js")
     .pipe(webpack2Stream(componentsFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(replaceJSRootName(componentsAMDName, "pdfjsViewer"));
 }
 
@@ -493,6 +507,7 @@ function createImageDecodersBundle(defines) {
     .src("./src/pdf.image_decoders.js")
     .pipe(webpack2Stream(componentsFileConfig))
     .pipe(replaceWebpackRequire())
+    .pipe(replaceNonWebpackImport())
     .pipe(replaceJSRootName(imageDecodersAMDName, "pdfjsImageDecoders"));
 }
 
@@ -555,11 +570,19 @@ function createTestSource(testsName, { bot = false, xfaOnly = false } = {}) {
     console.log("### Running " + testsName + " tests");
 
     const PDF_TEST = process.env.PDF_TEST || "test_manifest.json";
+    let forceNoChrome = false;
     const args = ["test.js"];
     switch (testsName) {
       case "browser":
         if (!bot) {
           args.push("--reftest");
+        } else {
+          const os = process.env.OS;
+          if (/windows/i.test(os)) {
+            // The browser-tests are too slow in Google Chrome on the Windows
+            // bot, causing a timeout, hence disabling them for now.
+            forceNoChrome = true;
+          }
         }
         if (xfaOnly) {
           args.push("--xfaOnly");
@@ -582,7 +605,7 @@ function createTestSource(testsName, { bot = false, xfaOnly = false } = {}) {
     if (bot) {
       args.push("--strictVerify");
     }
-    if (process.argv.includes("--noChrome")) {
+    if (process.argv.includes("--noChrome") || forceNoChrome) {
       args.push("--noChrome");
     }
 
@@ -599,11 +622,18 @@ function makeRef(done, bot) {
   console.log();
   console.log("### Creating reference images");
 
+  let forceNoChrome = false;
   const args = ["test.js", "--masterMode"];
   if (bot) {
+    const os = process.env.OS;
+    if (/windows/i.test(os)) {
+      // The browser-tests are too slow in Google Chrome on the Windows
+      // bot, causing a timeout, hence disabling them for now.
+      forceNoChrome = true;
+    }
     args.push("--noPrompts", "--strictVerify");
   }
-  if (process.argv.includes("--noChrome")) {
+  if (process.argv.includes("--noChrome") || forceNoChrome) {
     args.push("--noChrome");
   }
 
@@ -708,6 +738,12 @@ function getDefaultPreferences(dir) {
   return AppOptions.getAll(OptionKind.PREFERENCE);
 }
 
+function getDialogPolyfillCSS() {
+  return fs
+    .readFileSync("node_modules/dialog-polyfill/dist/dialog-polyfill.css")
+    .toString();
+}
+
 gulp.task("locale", function () {
   const VIEWER_LOCALE_OUTPUT = "web/locale/";
 
@@ -786,16 +822,15 @@ gulp.task("cmaps", function (done) {
   done();
 });
 
-function preprocessCSS(source, mode, defines, cleanup) {
+function preprocessCSS(source, defines) {
   const outName = getTempFile("~preprocess", ".css");
-  builder.preprocessCSS(mode, source, outName);
+  builder.preprocess(source, outName, defines);
   let out = fs.readFileSync(outName).toString();
   fs.unlinkSync(outName);
-  if (cleanup) {
-    // Strip out all license headers in the middle.
-    const reg = /\n\/\* Copyright(.|\n)*?Mozilla Foundation(.|\n)*?\*\//g;
-    out = out.replace(reg, "");
-  }
+
+  // Strip out all license headers in the middle.
+  const reg = /\n\/\* Copyright(.|\n)*?Mozilla Foundation(.|\n)*?\*\//g;
+  out = out.replace(reg, "");
 
   const i = source.lastIndexOf("/");
   return createStringSource(source.substr(i + 1), out);
@@ -834,8 +869,14 @@ function buildGeneric(defines, dir) {
     createStandardFontBundle().pipe(gulp.dest(dir + "web/standard_fonts")),
 
     preprocessHTML("web/viewer.html", defines).pipe(gulp.dest(dir + "web")),
-    preprocessCSS("web/viewer.css", "generic", defines, true)
-      .pipe(postcss([calc(), autoprefixer(AUTOPREFIXER_CONFIG)]))
+    preprocessCSS("web/viewer.css", defines)
+      .pipe(
+        postcss([
+          postcssLogical({ preserve: true }),
+          postcssDirPseudoClass(),
+          autoprefixer(AUTOPREFIXER_CONFIG),
+        ])
+      )
       .pipe(gulp.dest(dir + "web")),
 
     gulp
@@ -910,8 +951,14 @@ function buildComponents(defines, dir) {
   return merge([
     createComponentsBundle(defines).pipe(gulp.dest(dir)),
     gulp.src(COMPONENTS_IMAGES).pipe(gulp.dest(dir + "images")),
-    preprocessCSS("web/pdf_viewer.css", "components", defines, true)
-      .pipe(postcss([calc(), autoprefixer(AUTOPREFIXER_CONFIG)]))
+    preprocessCSS("web/pdf_viewer.css", defines)
+      .pipe(
+        postcss([
+          postcssLogical({ preserve: true }),
+          postcssDirPseudoClass(),
+          autoprefixer(AUTOPREFIXER_CONFIG),
+        ])
+      )
       .pipe(gulp.dest(dir)),
   ]);
 }
@@ -1000,8 +1047,14 @@ function buildMinified(defines, dir) {
     createStandardFontBundle().pipe(gulp.dest(dir + "web/standard_fonts")),
 
     preprocessHTML("web/viewer.html", defines).pipe(gulp.dest(dir + "web")),
-    preprocessCSS("web/viewer.css", "minified", defines, true)
-      .pipe(postcss([calc(), autoprefixer(AUTOPREFIXER_CONFIG)]))
+    preprocessCSS("web/viewer.css", defines)
+      .pipe(
+        postcss([
+          postcssLogical({ preserve: true }),
+          postcssDirPseudoClass(),
+          autoprefixer(AUTOPREFIXER_CONFIG),
+        ])
+      )
       .pipe(gulp.dest(dir + "web")),
 
     gulp
@@ -1194,19 +1247,17 @@ gulp.task(
           MOZCENTRAL_DIR + "browser/locales/en-US/pdfviewer/",
         FIREFOX_CONTENT_DIR = EXTENSION_SRC_DIR + "/firefox/content/";
 
+      const MOZCENTRAL_WEB_FILES = [
+        ...COMMON_WEB_FILES,
+        "!web/images/toolbarButton-openFile.svg",
+      ];
+
       // Clear out everything in the firefox extension build directory
       rimraf.sync(MOZCENTRAL_DIR);
 
       const versionJSON = getVersionJSON();
       const version = versionJSON.version,
         commit = versionJSON.commit;
-
-      // Ignore the fallback cursor images, since they're unnecessary in
-      // Firefox.
-      const MOZCENTRAL_COMMON_WEB_FILES = [
-        ...COMMON_WEB_FILES,
-        "!web/images/*.cur",
-      ];
 
       return merge([
         createMainBundle(defines).pipe(
@@ -1225,7 +1276,7 @@ gulp.task(
           gulp.dest(MOZCENTRAL_CONTENT_DIR + "web")
         ),
         gulp
-          .src(MOZCENTRAL_COMMON_WEB_FILES, { base: "web/" })
+          .src(MOZCENTRAL_WEB_FILES, { base: "web/" })
           .pipe(gulp.dest(MOZCENTRAL_CONTENT_DIR + "web")),
         createCMapBundle().pipe(
           gulp.dest(MOZCENTRAL_CONTENT_DIR + "web/cmaps")
@@ -1237,7 +1288,7 @@ gulp.task(
         preprocessHTML("web/viewer.html", defines).pipe(
           gulp.dest(MOZCENTRAL_CONTENT_DIR + "web")
         ),
-        preprocessCSS("web/viewer.css", "mozcentral", defines, true)
+        preprocessCSS("web/viewer.css", defines)
           .pipe(
             postcss([
               autoprefixer({
@@ -1291,6 +1342,11 @@ gulp.task(
       const CHROME_BUILD_DIR = BUILD_DIR + "/chromium/",
         CHROME_BUILD_CONTENT_DIR = CHROME_BUILD_DIR + "/content/";
 
+      const CHROME_WEB_FILES = [
+        ...COMMON_WEB_FILES,
+        "!web/images/toolbarButton-openFile.svg",
+      ];
+
       // Clear out everything in the chrome extension build directory
       rimraf.sync(CHROME_BUILD_DIR);
 
@@ -1310,7 +1366,7 @@ gulp.task(
           gulp.dest(CHROME_BUILD_CONTENT_DIR + "web")
         ),
         gulp
-          .src(COMMON_WEB_FILES, { base: "web/" })
+          .src(CHROME_WEB_FILES, { base: "web/" })
           .pipe(gulp.dest(CHROME_BUILD_CONTENT_DIR + "web")),
 
         gulp
@@ -1329,9 +1385,13 @@ gulp.task(
         preprocessHTML("web/viewer.html", defines).pipe(
           gulp.dest(CHROME_BUILD_CONTENT_DIR + "web")
         ),
-        preprocessCSS("web/viewer.css", "chrome", defines, true)
+        preprocessCSS("web/viewer.css", defines)
           .pipe(
-            postcss([autoprefixer({ overrideBrowserslist: ["chrome >= 68"] })])
+            postcss([
+              postcssLogical({ preserve: true }),
+              postcssDirPseudoClass(),
+              autoprefixer({ overrideBrowserslist: ["Chrome >= 76"] }),
+            ])
           )
           .pipe(gulp.dest(CHROME_BUILD_CONTENT_DIR + "web")),
 
@@ -1358,7 +1418,7 @@ gulp.task("jsdoc", function (done) {
   console.log();
   console.log("### Generating documentation (JSDoc)");
 
-  const JSDOC_FILES = ["src/doc_helper.js", "src/display/api.js"];
+  const JSDOC_FILES = ["src/display/api.js"];
 
   rimraf(JSDOC_BUILD_DIR, function () {
     mkdirp(JSDOC_BUILD_DIR).then(function () {
@@ -1397,12 +1457,14 @@ function buildLibHelper(bundleDefines, inputStream, outputDir) {
   // __non_webpack_require__ has to be used.
   // In this target, we don't create a bundle, so we have to replace the
   // occurrences of __non_webpack_require__ ourselves.
-  function babelPluginReplaceNonWebPackRequire(babel) {
+  function babelPluginReplaceNonWebpackImports(babel) {
     return {
       visitor: {
         Identifier(curPath, state) {
           if (curPath.node.name === "__non_webpack_require__") {
             curPath.replaceWith(babel.types.identifier("require"));
+          } else if (curPath.node.name === "__non_webpack_import__") {
+            curPath.replaceWith(babel.types.identifier("import"));
           }
         },
       },
@@ -1424,7 +1486,7 @@ function buildLibHelper(bundleDefines, inputStream, outputDir) {
             regenerator: true,
           },
         ],
-        babelPluginReplaceNonWebPackRequire,
+        babelPluginReplaceNonWebpackImports,
       ],
     }).code;
     const removeCjsSrc =
@@ -1465,6 +1527,8 @@ function buildLib(defines, dir) {
     DEFAULT_PREFERENCES: getDefaultPreferences(
       defines.SKIP_BABEL ? "lib/" : "lib-legacy/"
     ),
+    DIALOG_POLYFILL_CSS:
+      defines.GENERIC && !defines.SKIP_BABEL ? getDialogPolyfillCSS() : "",
   });
 
   const inputStream = merge([
@@ -1555,8 +1619,7 @@ gulp.task(
       fs.readFileSync(BUILD_DIR + "version.json").toString()
     ).version;
 
-    config.stableVersion = config.betaVersion;
-    config.betaVersion = version;
+    config.stableVersion = version;
 
     return merge([
       createStringSource(CONFIG_FILE, JSON.stringify(config, null, 2)).pipe(
@@ -1855,6 +1918,28 @@ gulp.task(
   )
 );
 
+gulp.task("dev-css", function createDevCSS() {
+  console.log();
+  console.log("### Building development CSS");
+
+  const defines = builder.merge(DEFINES, { GENERIC: true, TESTING: true });
+  const cssDir = BUILD_DIR + "dev-css/";
+
+  return merge([
+    gulp.src("web/images/*", { base: "web/" }).pipe(gulp.dest(cssDir)),
+
+    preprocessCSS("web/viewer.css", defines)
+      .pipe(
+        postcss([
+          postcssLogical({ preserve: true }),
+          postcssDirPseudoClass(),
+          autoprefixer({ overrideBrowserslist: ["last 2 versions"] }),
+        ])
+      )
+      .pipe(gulp.dest(cssDir)),
+  ]);
+});
+
 gulp.task(
   "dev-sandbox",
   gulp.series(
@@ -1883,6 +1968,13 @@ gulp.task(
 gulp.task(
   "server",
   gulp.parallel(
+    function watchDevCSS() {
+      gulp.watch(
+        ["web/*.css", "web/images/*"],
+        { ignoreInitial: false },
+        gulp.series("dev-css")
+      );
+    },
     function watchDevSandbox() {
       gulp.watch(
         [
@@ -1957,31 +2049,11 @@ gulp.task("wintersmith", function (done) {
       done(error);
       return;
     }
-    const { stableVersion, betaVersion } = config;
 
     replaceInFile(
       GH_PAGES_DIR + "/getting_started/index.html",
       /STABLE_VERSION/g,
-      stableVersion
-    );
-    replaceInFile(
-      GH_PAGES_DIR + "/getting_started/index.html",
-      /BETA_VERSION/g,
-      betaVersion
-    );
-
-    // Hide the beta version button if there is only a stable version.
-    const groupClass = betaVersion ? "btn-group-vertical centered" : "";
-    const hiddenClass = betaVersion ? "" : "hidden";
-    replaceInFile(
-      GH_PAGES_DIR + "/getting_started/index.html",
-      /GROUP_CLASS/g,
-      groupClass
-    );
-    replaceInFile(
-      GH_PAGES_DIR + "/getting_started/index.html",
-      /HIDDEN_CLASS/g,
-      hiddenClass
+      config.stableVersion
     );
 
     console.log("Done building with wintersmith.");
@@ -2048,6 +2120,10 @@ function packageBowerJson() {
     homepage: DIST_HOMEPAGE,
     bugs: DIST_BUGS_URL,
     license: DIST_LICENSE,
+    dependencies: {
+      dommatrix: "^1.0.3",
+      "web-streams-polyfill": "^3.2.1",
+    },
     peerDependencies: {
       "worker-loader": "^3.0.8", // Used in `external/dist/webpack.js`.
     },

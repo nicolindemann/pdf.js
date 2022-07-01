@@ -14,7 +14,9 @@
  */
 
 // eslint-disable-next-line max-len
-/** @typedef {import("./interfaces").IPDFTextLayerFactory} IPDFTextLayerFactory */
+/** @typedef {import("../src/display/display_utils").PageViewport} PageViewport */
+/** @typedef {import("./event_utils").EventBus} EventBus */
+/** @typedef {import("./text_highlighter").TextHighlighter} TextHighlighter */
 
 import { renderTextLayer } from "pdfjs-lib";
 
@@ -71,7 +73,7 @@ class TextLayerBuilder {
     if (!this.enhanceTextSelection) {
       const endOfContent = document.createElement("div");
       endOfContent.className = "endOfContent";
-      this.textLayerDiv.appendChild(endOfContent);
+      this.textLayerDiv.append(endOfContent);
     }
 
     this.eventBus.dispatch("textlayerrendered", {
@@ -109,7 +111,7 @@ class TextLayerBuilder {
     });
     this.textLayerRenderTask.promise.then(
       () => {
-        this.textLayerDiv.appendChild(textLayerFrag);
+        this.textLayerDiv.append(textLayerFrag);
         this._finishRendering();
         this.highlighter?.enable();
       },
@@ -217,36 +219,4 @@ class TextLayerBuilder {
   }
 }
 
-/**
- * @implements IPDFTextLayerFactory
- */
-class DefaultTextLayerFactory {
-  /**
-   * @param {HTMLDivElement} textLayerDiv
-   * @param {number} pageIndex
-   * @param {PageViewport} viewport
-   * @param {boolean} enhanceTextSelection
-   * @param {EventBus} eventBus
-   * @param {TextHighlighter} highlighter
-   * @returns {TextLayerBuilder}
-   */
-  createTextLayerBuilder(
-    textLayerDiv,
-    pageIndex,
-    viewport,
-    enhanceTextSelection = false,
-    eventBus,
-    highlighter
-  ) {
-    return new TextLayerBuilder({
-      textLayerDiv,
-      pageIndex,
-      viewport,
-      enhanceTextSelection,
-      eventBus,
-      highlighter,
-    });
-  }
-}
-
-export { DefaultTextLayerFactory, TextLayerBuilder };
+export { TextLayerBuilder };

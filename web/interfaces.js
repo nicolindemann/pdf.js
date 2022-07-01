@@ -14,6 +14,22 @@
  */
 /* eslint-disable getter-return */
 
+/** @typedef {import("../src/display/api").PDFPageProxy} PDFPageProxy */
+// eslint-disable-next-line max-len
+/** @typedef {import("../src/display/display_utils").PageViewport} PageViewport */
+// eslint-disable-next-line max-len
+/** @typedef {import("./annotation_layer_builder").AnnotationLayerBuilder} AnnotationLayerBuilder */
+// eslint-disable-next-line max-len
+/** @typedef {import("./annotation_editor_layer_builder").AnnotationEditorLayerBuilder} AnnotationEditorLayerBuilder */
+/** @typedef {import("./event_utils").EventBus} EventBus */
+// eslint-disable-next-line max-len
+/** @typedef {import("./struct_tree_builder").StructTreeLayerBuilder} StructTreeLayerBuilder */
+/** @typedef {import("./text_highlighter").TextHighlighter} TextHighlighter */
+// eslint-disable-next-line max-len
+/** @typedef {import("./text_layer_builder").TextLayerBuilder} TextLayerBuilder */
+/** @typedef {import("./ui_utils").RenderingStates} RenderingStates */
+/** @typedef {import("./xfa_layer_builder").XfaLayerBuilder} XfaLayerBuilder */
+
 /**
  * @interface
  */
@@ -163,7 +179,7 @@ class IPDFTextLayerFactory {
 class IPDFAnnotationLayerFactory {
   /**
    * @param {HTMLDivElement} pageDiv
-   * @param {PDFPage} pdfPage
+   * @param {PDFPageProxy} pdfPage
    * @param {AnnotationStorage} [annotationStorage] - Storage for annotation
    *   data in forms.
    * @param {string} [imageResourcesPath] - Path for image resources, mainly
@@ -175,8 +191,8 @@ class IPDFAnnotationLayerFactory {
    * @param {Object} [mouseState]
    * @param {Promise<Object<string, Array<Object>> | null>}
    *   [fieldObjectsPromise]
-   * @property {Map<string, Canvas> | null} [annotationCanvasMap] - Map some
-   *  annotation ids with canvases used to render them.
+   * @param {Map<string, HTMLCanvasElement>} [annotationCanvasMap] - Map some
+   *   annotation ids with canvases used to render them.
    * @returns {AnnotationLayerBuilder}
    */
   createAnnotationLayerBuilder(
@@ -197,10 +213,30 @@ class IPDFAnnotationLayerFactory {
 /**
  * @interface
  */
+class IPDFAnnotationEditorLayerFactory {
+  /**
+   * @param {HTMLDivElement} pageDiv
+   * @param {PDFPageProxy} pdfPage
+   * @param {IL10n} l10n
+   * @param {AnnotationStorage} [annotationStorage] - Storage for annotation
+   *   data in forms.
+   * @returns {AnnotationEditorLayerBuilder}
+   */
+  createAnnotationEditorLayerBuilder(
+    pageDiv,
+    pdfPage,
+    l10n = undefined,
+    annotationStorage = null
+  ) {}
+}
+
+/**
+ * @interface
+ */
 class IPDFXfaLayerFactory {
   /**
    * @param {HTMLDivElement} pageDiv
-   * @param {PDFPage} pdfPage
+   * @param {PDFPageProxy} pdfPage
    * @param {AnnotationStorage} [annotationStorage]
    * @param {Object} [xfaHtml]
    * @returns {XfaLayerBuilder}
@@ -218,10 +254,43 @@ class IPDFXfaLayerFactory {
  */
 class IPDFStructTreeLayerFactory {
   /**
-   * @param {PDFPage} pdfPage
+   * @param {PDFPageProxy} pdfPage
    * @returns {StructTreeLayerBuilder}
    */
   createStructTreeLayerBuilder(pdfPage) {}
+}
+
+/**
+ * @interface
+ */
+class IDownloadManager {
+  /**
+   * @param {string} url
+   * @param {string} filename
+   */
+  downloadUrl(url, filename) {}
+
+  /**
+   * @param {Uint8Array} data
+   * @param {string} filename
+   * @param {string} [contentType]
+   */
+  downloadData(data, filename, contentType) {}
+
+  /**
+   * @param {HTMLElement} element
+   * @param {Uint8Array} data
+   * @param {string} filename
+   * @returns {boolean} Indicating if the data was opened.
+   */
+  openOrDownloadData(element, data, filename) {}
+
+  /**
+   * @param {Blob} blob
+   * @param {string} url
+   * @param {string} filename
+   */
+  download(blob, url, filename) {}
 }
 
 /**
@@ -243,11 +312,11 @@ class IL10n {
    * property bag. If the key was not found, translation falls back to the
    * fallback text.
    * @param {string} key
-   * @param {object} args
-   * @param {string} fallback
+   * @param {Object | null} [args]
+   * @param {string} [fallback]
    * @returns {Promise<string>}
    */
-  async get(key, args, fallback) {}
+  async get(key, args = null, fallback) {}
 
   /**
    * Translates HTML element.
@@ -258,7 +327,9 @@ class IL10n {
 }
 
 export {
+  IDownloadManager,
   IL10n,
+  IPDFAnnotationEditorLayerFactory,
   IPDFAnnotationLayerFactory,
   IPDFLinkService,
   IPDFStructTreeLayerFactory,

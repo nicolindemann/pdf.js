@@ -40,12 +40,15 @@ import {
   PDFDocumentProxy,
   PDFPageProxy,
   PDFWorker,
+  PDFWorkerUtil,
   RenderTask,
 } from "../../src/display/api.js";
 import {
+  PageViewport,
   RenderingCancelledException,
   StatTimer,
 } from "../../src/display/display_utils.js";
+import { AnnotationStorage } from "../../src/display/annotation_storage.js";
 import { AutoPrintRegExp } from "../../web/ui_utils.js";
 import { GlobalImageCache } from "../../src/core/image_utils.js";
 import { GlobalWorkerOptions } from "../../src/display/worker_options.js";
@@ -75,7 +78,9 @@ describe("api", function () {
   }
 
   function mergeText(items) {
-    return items.map(chunk => chunk.str + (chunk.hasEOL ? "\n" : "")).join("");
+    return items
+      .map(chunk => (chunk.str ?? "") + (chunk.hasEOL ? "\n" : ""))
+      .join("");
   }
 
   describe("getDocument", function () {
@@ -238,7 +243,7 @@ describe("api", function () {
       const passwordNeededCapability = createPromiseCapability();
       const passwordIncorrectCapability = createPromiseCapability();
       // Attach the callback that is used to request a password;
-      // similarly to how viewer.js handles passwords.
+      // similarly to how the default viewer handles passwords.
       loadingTask.onPassword = function (updatePassword, reason) {
         if (
           reason === PasswordResponses.NEED_PASSWORD &&
@@ -401,6 +406,38 @@ describe("api", function () {
         );
 
         await Promise.all([result1, result2]);
+      }
+    );
+
+    it(
+      "creates pdf doc from password protected PDF file and passes an Error " +
+        "(asynchronously) to the onPassword callback (bug 1754421)",
+      async function () {
+        const loadingTask = getDocument(
+          buildGetDocumentParams("issue3371.pdf")
+        );
+        expect(loadingTask instanceof PDFDocumentLoadingTask).toEqual(true);
+
+        // Attach the callback that is used to request a password;
+        // similarly to how the default viewer handles passwords.
+        loadingTask.onPassword = function (updatePassword, reason) {
+          waitSome(() => {
+            updatePassword(new Error("Should reject the loadingTask."));
+          });
+        };
+
+        await loadingTask.promise.then(
+          function () {
+            // Shouldn't get here.
+            expect(false).toEqual(true);
+          },
+          function (reason) {
+            expect(reason instanceof PasswordException).toEqual(true);
+            expect(reason.code).toEqual(PasswordResponses.NEED_PASSWORD);
+          }
+        );
+
+        await loadingTask.destroy();
       }
     );
 
@@ -622,9 +659,7 @@ describe("api", function () {
         expect(false).toEqual(true);
       } catch (reason) {
         expect(reason instanceof UnknownErrorException).toEqual(true);
-        expect(reason.message).toEqual(
-          "Page dictionary kids object is not an array."
-        );
+        expect(reason.message).toEqual("Illegal character: 41");
       }
       try {
         await pdfDocument2.getPage(1);
@@ -633,9 +668,7 @@ describe("api", function () {
         expect(false).toEqual(true);
       } catch (reason) {
         expect(reason instanceof UnknownErrorException).toEqual(true);
-        expect(reason.message).toEqual(
-          "Page dictionary kids object is not an array."
-        );
+        expect(reason.message).toEqual("End of file inside array.");
       }
 
       await Promise.all([loadingTask1.destroy(), loadingTask2.destroy()]);
@@ -786,40 +819,23 @@ describe("api", function () {
     });
 
     it("gets non-existent page", async function () {
-      let outOfRangePromise = pdfDocument.getPage(100);
-      let nonIntegerPromise = pdfDocument.getPage(2.5);
-      let nonNumberPromise = pdfDocument.getPage("1");
+      const pageNumbers = [
+        /* outOfRange = */ 100,
+        /* nonInteger = */ 2.5,
+        /* nonNumber = */ "1",
+      ];
 
-      outOfRangePromise = outOfRangePromise.then(
-        function () {
-          throw new Error("shall fail for out-of-range pageNumber parameter");
-        },
-        function (reason) {
-          expect(reason instanceof Error).toEqual(true);
-        }
-      );
-      nonIntegerPromise = nonIntegerPromise.then(
-        function () {
-          throw new Error("shall fail for non-integer pageNumber parameter");
-        },
-        function (reason) {
-          expect(reason instanceof Error).toEqual(true);
-        }
-      );
-      nonNumberPromise = nonNumberPromise.then(
-        function () {
-          throw new Error("shall fail for non-number pageNumber parameter");
-        },
-        function (reason) {
-          expect(reason instanceof Error).toEqual(true);
-        }
-      );
+      for (const pageNumber of pageNumbers) {
+        try {
+          await pdfDocument.getPage(pageNumber);
 
-      await Promise.all([
-        outOfRangePromise,
-        nonIntegerPromise,
-        nonNumberPromise,
-      ]);
+          // Shouldn't get here.
+          expect(false).toEqual(true);
+        } catch (reason) {
+          expect(reason instanceof Error).toEqual(true);
+          expect(reason.message).toEqual("Invalid page request.");
+        }
+      }
     });
 
     it("gets page, from /Pages tree with circular reference", async function () {
@@ -878,18 +894,35 @@ describe("api", function () {
     });
 
     it("gets invalid page index", async function () {
-      const ref = { num: 3, gen: 0 }; // Reference to a font dictionary.
+      const pageRefs = [
+        /* fontRef = */ { num: 3, gen: 0 },
+        /* invalidRef = */ { num: -1, gen: 0 },
+        /* nonRef = */ "qwerty",
+        /* nullRef = */ null,
+      ];
 
-      try {
-        await pdfDocument.getPageIndex(ref);
+      const expectedErrors = [
+        {
+          exception: UnknownErrorException,
+          message: "The reference does not point to a /Page dictionary.",
+        },
+        { exception: Error, message: "Invalid pageIndex request." },
+        { exception: Error, message: "Invalid pageIndex request." },
+        { exception: Error, message: "Invalid pageIndex request." },
+      ];
 
-        // Shouldn't get here.
-        expect(false).toEqual(true);
-      } catch (reason) {
-        expect(reason instanceof UnknownErrorException).toEqual(true);
-        expect(reason.message).toEqual(
-          "The reference does not point to a /Page dictionary."
-        );
+      for (let i = 0, ii = pageRefs.length; i < ii; i++) {
+        try {
+          await pdfDocument.getPageIndex(pageRefs[i]);
+
+          // Shouldn't get here.
+          expect(false).toEqual(true);
+        } catch (reason) {
+          const { exception, message } = expectedErrors[i];
+
+          expect(reason instanceof exception).toEqual(true);
+          expect(reason.message).toEqual(message);
+        }
       }
     });
 
@@ -969,6 +1002,21 @@ describe("api", function () {
         69,
         125,
         0,
+      ]);
+
+      await loadingTask.destroy();
+    });
+
+    it("gets a destination, from /Names (NameTree) dictionary with keys using PDFDocEncoding (issue 14847)", async function () {
+      const loadingTask = getDocument(buildGetDocumentParams("issue14847.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const destination = await pdfDoc.getDestination("index");
+      expect(destination).toEqual([
+        { num: 10, gen: 0 },
+        { name: "XYZ" },
+        85.039,
+        728.504,
+        null,
       ]);
 
       await loadingTask.destroy();
@@ -1260,6 +1308,101 @@ describe("api", function () {
       await loadingTask.destroy();
     });
 
+    it("gets non-existent fieldObjects", async function () {
+      const fieldObjects = await pdfDocument.getFieldObjects();
+      expect(fieldObjects).toEqual(null);
+    });
+
+    it("gets fieldObjects", async function () {
+      const loadingTask = getDocument(buildGetDocumentParams("js-authors.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const fieldObjects = await pdfDoc.getFieldObjects();
+
+      expect(fieldObjects).toEqual({
+        Text1: [
+          {
+            id: "25R",
+            value: "",
+            defaultValue: "",
+            multiline: false,
+            password: false,
+            charLimit: null,
+            comb: false,
+            editable: true,
+            hidden: false,
+            name: "Text1",
+            rect: [24.1789, 719.66, 432.22, 741.66],
+            actions: null,
+            page: 0,
+            strokeColor: null,
+            fillColor: null,
+            rotation: 0,
+            type: "text",
+          },
+        ],
+        Button1: [
+          {
+            id: "26R",
+            value: "Off",
+            defaultValue: null,
+            exportValues: undefined,
+            editable: true,
+            name: "Button1",
+            rect: [455.436, 719.678, 527.436, 739.678],
+            hidden: false,
+            actions: {
+              Action: [
+                `this.getField("Text1").value = this.info.authors.join("::");`,
+              ],
+            },
+            page: 0,
+            strokeColor: null,
+            fillColor: new Uint8ClampedArray([192, 192, 192]),
+            rotation: 0,
+            type: "button",
+          },
+        ],
+      });
+
+      await loadingTask.destroy();
+    });
+
+    it("gets non-existent calculationOrder", async function () {
+      const calculationOrder = await pdfDocument.getCalculationOrderIds();
+      expect(calculationOrder).toEqual(null);
+    });
+
+    it("gets calculationOrder", async function () {
+      if (isNodeJS) {
+        pending("Linked test-cases are not supported in Node.js.");
+      }
+      const loadingTask = getDocument(buildGetDocumentParams("issue13132.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const calculationOrder = await pdfDoc.getCalculationOrderIds();
+
+      expect(calculationOrder).toEqual([
+        "319R",
+        "320R",
+        "321R",
+        "322R",
+        "323R",
+        "324R",
+        "325R",
+        "326R",
+        "327R",
+        "328R",
+        "329R",
+        "330R",
+        "331R",
+        "332R",
+        "333R",
+        "334R",
+        "335R",
+      ]);
+
+      await loadingTask.destroy();
+    });
+
     it("gets non-existent outline", async function () {
       const loadingTask = getDocument(
         buildGetDocumentParams("tracemonkey.pdf")
@@ -1312,6 +1455,33 @@ describe("api", function () {
       expect(outlineItemOne.bold).toEqual(false);
       expect(outlineItemOne.italic).toEqual(true);
       expect(outlineItemOne.color).toEqual(new Uint8ClampedArray([0, 0, 0]));
+
+      await loadingTask.destroy();
+    });
+
+    it("gets outline, with dest-strings using PDFDocEncoding (issue 14864)", async function () {
+      if (isNodeJS) {
+        pending("Linked test-cases are not supported in Node.js.");
+      }
+      const loadingTask = getDocument(buildGetDocumentParams("issue14864.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const outline = await pdfDoc.getOutline();
+
+      expect(Array.isArray(outline)).toEqual(true);
+      expect(outline.length).toEqual(6);
+
+      expect(outline[4]).toEqual({
+        dest: "Händel -- Halle🎆lujah",
+        url: null,
+        unsafeUrl: undefined,
+        newWindow: undefined,
+        title: "Händel -- Halle🎆lujah",
+        color: new Uint8ClampedArray([0, 0, 0]),
+        count: undefined,
+        bold: false,
+        italic: false,
+        items: [],
+      });
 
       await loadingTask.destroy();
     });
@@ -1543,7 +1713,7 @@ describe("api", function () {
 
       expect(fingerprints1).not.toEqual(fingerprints2);
 
-      expect(fingerprints1).toEqual(["2f695a83d6e7553c24fc08b7ac69712d", null]);
+      expect(fingerprints1).toEqual(["657428c0628e329f9a281fb6d2d092d4", null]);
       expect(fingerprints2).toEqual(["04c7126b34a46b6d4d6e7a1eff7edcb6", null]);
 
       await Promise.all([loadingTask1.destroy(), loadingTask2.destroy()]);
@@ -1715,6 +1885,8 @@ describe("api", function () {
 
     it("gets viewport", function () {
       const viewport = page.getViewport({ scale: 1.5, rotation: 90 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       expect(viewport.viewBox).toEqual(page.view);
       expect(viewport.scale).toEqual(1.5);
       expect(viewport.rotation).toEqual(90);
@@ -1730,6 +1902,8 @@ describe("api", function () {
         offsetX: 100,
         offsetY: -100,
       });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       expect(viewport.transform).toEqual([1, 0, 0, -1, 100, 741.89]);
     });
 
@@ -1737,11 +1911,14 @@ describe("api", function () {
       const scale = 1,
         rotation = 0;
       const viewport = page.getViewport({ scale, rotation });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const dontFlipViewport = page.getViewport({
         scale,
         rotation,
         dontFlip: true,
       });
+      expect(dontFlipViewport instanceof PageViewport).toEqual(true);
 
       expect(dontFlipViewport).not.toEqual(viewport);
       expect(dontFlipViewport).toEqual(viewport.clone({ dontFlip: true }));
@@ -1863,14 +2040,13 @@ describe("api", function () {
     it("gets text content", async function () {
       const defaultPromise = page.getTextContent();
       const parametersPromise = page.getTextContent({
-        normalizeWhitespace: true,
         disableCombineTextItems: true,
       });
 
       const data = await Promise.all([defaultPromise, parametersPromise]);
 
       expect(!!data[0].items).toEqual(true);
-      expect(data[0].items.length).toEqual(11);
+      expect(data[0].items.length).toEqual(15);
       expect(!!data[0].styles).toEqual(true);
 
       const page1 = mergeText(data[0].items);
@@ -1907,8 +2083,10 @@ page 1 / 3`);
       });
       expect(styles[fontName]).toEqual({
         fontFamily: "serif",
-        ascent: NaN,
-        descent: NaN,
+        // `useSystemFonts` has a different value in web environments
+        // and in Node.js.
+        ascent: isNodeJS ? NaN : 0.683,
+        descent: isNodeJS ? NaN : -0.217,
         vertical: false,
       });
 
@@ -2044,6 +2222,29 @@ sozialökonomische Gerechtigkeit.`)
       await loadingTask.destroy();
     });
 
+    it("gets text content, with invisible text marks (issue 9186)", async function () {
+      if (isNodeJS) {
+        pending("Linked test-cases are not supported in Node.js.");
+      }
+
+      const loadingTask = getDocument(buildGetDocumentParams("issue9186.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(1);
+      const { items } = await pdfPage.getTextContent();
+      const text = mergeText(items);
+
+      expect(
+        text.includes(`This Agreement (“Agreement”) is made as of this 25th day of January, 2017, by and
+between EDWARD G. ATSINGER III, not individually but as sole Trustee of the ATSINGER
+FAMILY TRUST /u/a dated October 31, 1980 as amended, and STUART W. EPPERSON, not
+individually but solely as Trustee of the STUART W. EPPERSON REVOCABLE LIVING
+TRUST /u/a dated January 14th 1993 as amended, collectively referred to herein as “Lessor”, and
+Caron Broadcasting, Inc., an Ohio corporation (“Lessee”).`)
+      ).toEqual(true);
+
+      await loadingTask.destroy();
+    });
+
     it("gets text content, with beginbfrange operator handled correctly (bug 1627427)", async function () {
       const loadingTask = getDocument(
         buildGetDocumentParams("bug1627427_reduced.pdf")
@@ -2056,6 +2257,44 @@ sozialökonomische Gerechtigkeit.`)
       expect(text).toEqual(
         "침하게 흐린 품이 눈이 올 듯하더니 눈은 아니 오고 얼다가 만 비가 추"
       );
+
+      await loadingTask.destroy();
+    });
+
+    it("gets text content, and check that out-of-page text is not present (bug 1755201)", async function () {
+      if (isNodeJS) {
+        pending("Linked test-cases are not supported in Node.js.");
+      }
+
+      const loadingTask = getDocument(buildGetDocumentParams("bug1755201.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(6);
+      const { items } = await pdfPage.getTextContent();
+      const text = mergeText(items);
+
+      expect(/win aisle/.test(text)).toEqual(false);
+
+      await loadingTask.destroy();
+    });
+
+    it("gets text content with or without includeMarkedContent, and compare (issue 15094)", async function () {
+      if (isNodeJS) {
+        pending("Linked test-cases are not supported in Node.js.");
+      }
+
+      const loadingTask = getDocument(buildGetDocumentParams("pdf.pdf"));
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(568);
+      let { items } = await pdfPage.getTextContent({
+        includeMarkedContent: false,
+      });
+      const textWithoutMC = mergeText(items);
+      ({ items } = await pdfPage.getTextContent({
+        includeMarkedContent: true,
+      }));
+      const textWithMC = mergeText(items);
+
+      expect(textWithoutMC).toEqual(textWithMC);
 
       await loadingTask.destroy();
     });
@@ -2231,15 +2470,15 @@ sozialökonomische Gerechtigkeit.`)
       const opListAnnotEnable = await pdfPage.getOperatorList({
         annotationMode: AnnotationMode.ENABLE,
       });
-      expect(opListAnnotEnable.fnArray.length).toBeGreaterThan(150);
-      expect(opListAnnotEnable.argsArray.length).toBeGreaterThan(150);
+      expect(opListAnnotEnable.fnArray.length).toBeGreaterThan(140);
+      expect(opListAnnotEnable.argsArray.length).toBeGreaterThan(140);
       expect(opListAnnotEnable.lastChunk).toEqual(true);
 
       const opListAnnotEnableForms = await pdfPage.getOperatorList({
         annotationMode: AnnotationMode.ENABLE_FORMS,
       });
-      expect(opListAnnotEnableForms.fnArray.length).toBeGreaterThan(40);
-      expect(opListAnnotEnableForms.argsArray.length).toBeGreaterThan(40);
+      expect(opListAnnotEnableForms.fnArray.length).toBeGreaterThan(30);
+      expect(opListAnnotEnableForms.argsArray.length).toBeGreaterThan(30);
       expect(opListAnnotEnableForms.lastChunk).toEqual(true);
 
       const opListAnnotEnableStorage = await pdfPage.getOperatorList({
@@ -2259,6 +2498,26 @@ sozialökonomische Gerechtigkeit.`)
       expect(opListAnnotEnable.fnArray.length).toBeLessThan(
         opListAnnotEnableStorage.fnArray.length
       );
+
+      await loadingTask.destroy();
+    });
+
+    it("gets operatorList, with page resources containing corrupt /CCITTFaxDecode data", async function () {
+      const loadingTask = getDocument(
+        buildGetDocumentParams("poppler-90-0-fuzzed.pdf")
+      );
+      expect(loadingTask instanceof PDFDocumentLoadingTask).toEqual(true);
+
+      const pdfDoc = await loadingTask.promise;
+      expect(pdfDoc.numPages).toEqual(16);
+
+      const pdfPage = await pdfDoc.getPage(6);
+      expect(pdfPage instanceof PDFPageProxy).toEqual(true);
+
+      const opList = await pdfPage.getOperatorList();
+      expect(opList.fnArray.length).toBeGreaterThan(25);
+      expect(opList.argsArray.length).toBeGreaterThan(25);
+      expect(opList.lastChunk).toEqual(true);
 
       await loadingTask.destroy();
     });
@@ -2312,11 +2571,12 @@ sozialökonomische Gerechtigkeit.`)
       const pdfDoc = await loadingTask.promise;
       const pdfPage = await pdfDoc.getPage(1);
       const viewport = pdfPage.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask = pdfPage.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2346,11 +2606,12 @@ sozialökonomische Gerechtigkeit.`)
 
     it("cancels rendering of page", async function () {
       const viewport = page.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask = page.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2376,11 +2637,12 @@ sozialökonomische Gerechtigkeit.`)
 
     it("re-render page, using the same canvas, after cancelling rendering", async function () {
       const viewport = page.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask = page.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2416,11 +2678,12 @@ sozialökonomische Gerechtigkeit.`)
         pdfDocument.getOptionalContentConfig();
 
       const viewport = page.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask1 = page.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2458,11 +2721,12 @@ sozialökonomische Gerechtigkeit.`)
       const pdfPage = await pdfDoc.getPage(1);
 
       const viewport = pdfPage.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask = pdfPage.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2487,11 +2751,12 @@ sozialökonomische Gerechtigkeit.`)
       const pdfPage = await pdfDoc.getPage(1);
 
       const viewport = pdfPage.getViewport({ scale: 1 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
       );
-
       const renderTask = pdfPage.render({
         canvasContext: canvasAndCtx.context,
         canvasFactory: CanvasFactory,
@@ -2586,6 +2851,75 @@ sozialökonomische Gerechtigkeit.`)
       await loadingTask.destroy();
       firstImgData = null;
     });
+
+    it("render for printing, with `printAnnotationStorage` set", async function () {
+      async function getPrintData(printAnnotationStorage = null) {
+        const canvasAndCtx = CanvasFactory.create(
+          viewport.width,
+          viewport.height
+        );
+        const renderTask = pdfPage.render({
+          canvasContext: canvasAndCtx.context,
+          canvasFactory: CanvasFactory,
+          viewport,
+          intent: "print",
+          annotationMode: AnnotationMode.ENABLE_STORAGE,
+          printAnnotationStorage,
+        });
+
+        await renderTask.promise;
+        const printData = canvasAndCtx.canvas.toDataURL();
+        CanvasFactory.destroy(canvasAndCtx);
+
+        return printData;
+      }
+
+      const loadingTask = getDocument(
+        buildGetDocumentParams("annotation-tx.pdf")
+      );
+      const pdfDoc = await loadingTask.promise;
+      const pdfPage = await pdfDoc.getPage(1);
+      const viewport = pdfPage.getViewport({ scale: 1 });
+
+      // Update the contents of the form-field.
+      const { annotationStorage } = pdfDoc;
+      annotationStorage.setValue("22R", { value: "Hello World" });
+
+      // Render for printing, with default parameters.
+      const printOriginalData = await getPrintData();
+
+      // Get the *frozen* print-storage for use during printing.
+      const printAnnotationStorage = annotationStorage.print;
+      // Update the contents of the form-field again.
+      annotationStorage.setValue("22R", { value: "Printing again..." });
+
+      const annotationHash = AnnotationStorage.getHash(
+        annotationStorage.serializable
+      );
+      const printAnnotationHash = AnnotationStorage.getHash(
+        printAnnotationStorage.serializable
+      );
+      // Sanity check to ensure that the print-storage didn't change,
+      // after the form-field was updated.
+      expect(printAnnotationHash).not.toEqual(annotationHash);
+
+      // Render for printing again, after updating the form-field,
+      // with default parameters.
+      const printAgainData = await getPrintData();
+
+      // Render for printing again, after updating the form-field,
+      // with `printAnnotationStorage` set.
+      const printStorageData = await getPrintData(printAnnotationStorage);
+
+      // Ensure that printing again, with default parameters,
+      // actually uses the "new" form-field data.
+      expect(printAgainData).not.toEqual(printOriginalData);
+      // Finally ensure that printing, with `printAnnotationStorage` set,
+      // still uses the "previous" form-field data.
+      expect(printStorageData).toEqual(printOriginalData);
+
+      await loadingTask.destroy();
+    });
   });
 
   describe("Multiple `getDocument` instances", function () {
@@ -2606,6 +2940,8 @@ sozialökonomische Gerechtigkeit.`)
       const pdf = await loadingTask.promise;
       const page = await pdf.getPage(1);
       const viewport = page.getViewport({ scale: 1.2 });
+      expect(viewport instanceof PageViewport).toEqual(true);
+
       const canvasAndCtx = CanvasFactory.create(
         viewport.width,
         viewport.height
@@ -2763,5 +3099,34 @@ sozialökonomische Gerechtigkeit.`)
         await loadingTask.destroy();
       }
     );
+  });
+
+  describe("PDFWorkerUtil", function () {
+    describe("isSameOrigin", function () {
+      const { isSameOrigin } = PDFWorkerUtil;
+
+      it("handles invalid base URLs", function () {
+        // The base URL is not valid.
+        expect(isSameOrigin("/foo", "/bar")).toEqual(false);
+
+        // The base URL has no origin.
+        expect(isSameOrigin("blob:foo", "/bar")).toEqual(false);
+      });
+
+      it("correctly checks if the origin of both URLs matches", function () {
+        expect(
+          isSameOrigin(
+            "https://www.mozilla.org/foo",
+            "https://www.mozilla.org/bar"
+          )
+        ).toEqual(true);
+        expect(
+          isSameOrigin(
+            "https://www.mozilla.org/foo",
+            "https://www.example.com/bar"
+          )
+        ).toEqual(false);
+      });
+    });
   });
 });
