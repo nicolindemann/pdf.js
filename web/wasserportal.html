@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+  <title>bpc Stadtwerke- Kundenportal</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="shortcut icon" href="https://onlineservice.hamburgwasser.de/favicon_hww.ico" type="image/x-icon"> 
+   
+  <style>
+    .modal {
+      transition: opacity 0.25s ease;
+    }
+    body.modal-active {
+      overflow-x: hidden;
+      overflow-y: visible !important;
+    }
+    .CaiAppHeader--btnMin {
+      display: none;
+    }
+  </style>
+</head>
+
+<body class="flex items-center justify-center h-screen" style="background-image: url('bg.png');background-size: contain;">
+    
+  <!--Modal-->
+  <div class="modal opacity-0 pointer-events-none fixed w-full h-full top-0 left-0 flex ">
+    <div class="modal-overlay absolute w-full h-full bg-gray-500 opacity-50"></div>
+
+    <div class="modal-container bg-white w-8/12 ml-20 rounded shadow-lg z-50 overflow-y-auto">
+      
+
+      <!-- Add margin if you want to see some of the overlay behind the modal-->
+      <div class="modal-content py-4 text-left px-6 h-full">
+        <!--Title-->
+        <div class="flex justify-between items-center pb-3">
+          <p class="text-2xl font-bold"></p>
+          <div class="modal-close cursor-pointer z-50">
+            <svg class="fill-current text-black" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+              <path d="M14.53 4.53l-1.06-1.06L9 7.94 4.53 3.47 3.47 4.53 7.94 9l-4.47 4.47 1.06 1.06L9 10.06l4.47 4.47 1.06-1.06L10.06 9z"></path>
+            </svg>
+          </div>
+        </div>
+
+        <!--Body-->
+        <iframe src="http://showcase.bpc/web/viewer.html" id="frameID" class="w-full h-full"></iframe>
+
+        
+      </div>
+    </div>
+  </div>
+
+  <script>
+function toggleModal () {
+      const body = document.querySelector('body')
+      const modal = document.querySelector('.modal')
+      modal.classList.toggle('opacity-0')
+      modal.classList.toggle('pointer-events-none')
+      body.classList.toggle('modal-active')
+    }
+
+    var closemodal = document.querySelectorAll('.modal-close')
+    for (var i = 0; i < closemodal.length; i++) {
+      closemodal[i].addEventListener('click', toggleModal)
+    }
+
+    /*
+    var openmodal = document.querySelectorAll('.modal-open')
+    for (var i = 0; i < openmodal.length; i++) {
+      openmodal[i].addEventListener('click', function(event){
+    	event.preventDefault()
+    	toggleModal()
+      })
+    }
+    
+    
+  
+    
+    document.onkeydown = function(evt) {
+      evt = evt || window.event
+      var isEscape = false
+      if ("key" in evt) {
+    	isEscape = (evt.key === "Escape" || evt.key === "Esc")
+      } else {
+    	isEscape = (evt.keyCode === 27)
+      }
+      if (isEscape && document.body.classList.contains('modal-active')) {
+    	toggleModal()
+      }
+    };
+    
+    
+    
+    */
+     
+  </script>
+
+  <script type="text/javascript" src="https://itmc-bot-integrations.vercel.app/bbb.js"></script> 
+  <script>
+
+    window.bbb.actions['bill'] = (obj) => {
+      return new Promise((resolve) => { 
+        window.setTimeout(() => {
+          toggleModal()
+
+
+          var iframe = document.getElementById('frameID')
+
+          iframe.contentWindow.postMessage('test', '*')
+
+        }, 2500)
+        window.setTimeout(() => {
+          resolve({ type: "text", content: "" })
+        }, 10000)
+      })
+    }
+    
+      </script>   
+  <script
+  src="webchat.js"
+  channelId="1751ed35-b96e-4708-9b4b-dcd4c3f40cfc"
+  token="6804ec3bfcbd1cbdd1d05545b56446fb"
+  id="cai-webchat">
+  </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js" integrity="sha512-U5C477Z8VvmbYAoV4HDq17tf4wG6HXPC6/KM9+0/wEXQQ13gmKY2Zb0Z2vu0VNUWch4GlJ+Tl/dfoLOH4i2msw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script></body>
+</html>

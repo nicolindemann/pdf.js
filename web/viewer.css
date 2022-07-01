@@ -338,6 +338,7 @@ html[dir="rtl"]
 }
 
 .toolbar {
+  display: none;
   position: relative;
   left: 0;
   right: 0;
@@ -1942,4 +1943,16 @@ html[dir="rtl"] #documentPropertiesOverlay .row > * {
   #scaleSelectContainer {
     display: none;
   }
+}
+
+
+#wassermarker {
+  width: 90%;
+  height: 65px;
+  border: 4px solid red;
+  position: absolute;
+  top: 860px;
+  left: 40px;
+  z-index: 9999;
+  display: none;
 }

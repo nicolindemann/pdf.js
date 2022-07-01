@@ -235,6 +235,33 @@ function webViewerLoad() {
   }
 }
 
+
+document.getElementById('viewerContainer').scrollTo({
+  left: 0,
+  top: 0
+});
+
+window.addEventListener("message", (event) => {
+  moveToMark()
+})
+
+window.moveToMark = () => {
+  document.getElementById('viewerContainer').scrollTo({
+    left: 0,
+    top: 0
+  });
+  window.setTimeout(() => {
+    document.getElementById('viewerContainer').scrollTo({
+      left: 0,
+      top: 600,
+      behavior: 'smooth' 
+    });
+    window.setTimeout(() => {
+      document.getElementById('wassermarker').style.display = 'block'
+    }, 4500)
+  }, 2500)
+}
+
 // Block the "load" event until all pages are loaded, to ensure that printing
 // works in Firefox; see https://bugzilla.mozilla.org/show_bug.cgi?id=1618553
 if (document.blockUnblockOnload) {
